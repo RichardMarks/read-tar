@@ -68,13 +68,16 @@
           arr.push(dataView.getUint8(parser.position));
           parser.position += 1;
         }
-        return String.fromCharCode.apply(null, arr);
+        // window.console.dir(arr);
+        const str = String.fromCharCode.apply(null, arr);
+        // window.console.info(str);
+        return str;
       },
       n: function (length) { return parseInt(parser.s(length), 8); },
     };
     function parseField(name, type, length) {
       header[name] = parser[type](length);
-      window.console.log(name + ': ' + header[name]);
+      // window.console.log(name + ': ' + header[name]);
       // window.console.log([
       //   'parseField(name="' + name + '", type="' + (type === 's' ? 'string' : 'number') + '", length=' + length + ')',
       //   '\t' + name + ': ' + header[name]].join('\n'));
@@ -102,7 +105,7 @@
     //   char chksum[8];               /* 148 */
       chksum: { n: 8 },
     //   char typeflag;                /* 156 */
-      typeflag: { n: 1 },
+      typeflag: { s: 1 },
     //   char linkname[100];           /* 157 */
       linkname: { s: 100 },
     //   char magic[6];                /* 257 */
@@ -135,40 +138,101 @@
     return parser.position;
   };
 
-  function main() {
+  function TarFileEntry() {}
 
+  function TarFile(dataView) {
+    this._dataView = dataView;
+    this._position = 0;
+  }
+  TarFile.prototype = Object.create({});
+  TarFile.prototype.constructor = TarFile;
+  TarFile.prototype.hasData = function hasData() {
+    return this._position + 4 < this._dataView.byteLength && this._dataView.getUint32(this._position, true) !== 0;
+  };
+  TarFile.prototype.extract = function extract() {
+    const file = new TarFileEntry();
+    const headerStartPosition = this._position;
+    const dataStartPosition = headerStartPosition + 512;
+    const header = new TarHeader();
+    this._position = header.parse(this._dataView, this._position);
+    file.header = header;
+
+    const type = header.typeflag;
+    if (type === '0' || type === '\0') {
+      file.buffer = this._dataView.buffer.slice(this._position, this._position + header.size);
+      this._position += header.size;
+    }
+
+    let dataEndPosition = dataStartPosition + header.size;
+    const szModBlock = header.size % 512;
+    if (szModBlock !== 0) {
+      dataEndPosition += (512 - szModBlock);
+    }
+    this._position = dataEndPosition;
+    return file;
+  };
+
+  function Tar() {}
+  Tar.prototype = Object.create({});
+  Tar.prototype.constructor = Tar;
+  Tar.prototype.parse = function (dataView) {
+    const tar = this;
+    tar.files = [];
+    return new Promise(function (resolve, reject) {
+      try {
+        const tarFile = new TarFile(dataView);
+        while (tarFile.hasData()) {
+          const file = tarFile.extract();
+          if (file.header.typeflag === '0' || file.header.typeflag === '\0') {
+            tar.files.push(file);
+          }
+        }
+      } catch (err) { reject(err); }
+      resolve(tar.files);
+    });
+  };
+
+  function main() {
+    // create a simple display for the content listing
+    const contentDiv = document.createElement('div');
+    contentDiv.id = 'content';
+    document.body.insertBefore(contentDiv, document.body.firstChild);
     // create the input form
     const btn = document.createElement('button');
     btn.innerHTML = 'Browse...';
     document.body.appendChild(btn);
     btn.addEventListener('click', function () {
       browseForFile().then(function (contents) {
+        contentDiv.innerHTML = '';
         // create a file reader
         const reader = new FileReader();
         reader.onload = function (readerEvent) {
           window.console.log('Reading ' + contents.name);
           // result is an ArrayBuffer containing the contents of the file
           const result = readerEvent.target.result;
-          // window.console.dir(result);
-          // create a data view for reading the file header
+          const dataView = new DataView(result);
+          const tar = new Tar();
+
           const pre = document.createElement('pre');
           pre.innerHTML = hexdump(result);
           document.body.appendChild(pre);
-          const dataView = new DataView(result);
-          // window.console.dir(dataView);
-          // parse the tar header
-          const header = new TarHeader();
-          const position = header.parse(dataView, 0);
-          // window.console.log('parser position is ' + position);
 
-
+          tar.parse(dataView).then(function (files) {
+            files.forEach(function (file, index) {
+              const entryDiv = document.createElement('div');
+              entryDiv.id = 'entry_' + index;
+              entryDiv.innerHTML = [
+                'Filename: ' + file.header.name,
+                'Filesize: ' + file.header.size + ' bytes',
+                '<pre>Data: ' + hexdump(file.buffer) + '</pre>',
+              ].join('<br />');
+              contentDiv.appendChild(entryDiv);
+              window.console.dir(file);
+            });
+          }).catch(function (err) { window.console.error(err); });
         };
         reader.readAsArrayBuffer(contents);
 
-
-
-        // window.console.info('Tar File Contents:');
-        // window.console.dir(contents);
       }).catch(function (err) { window.console.error(err); });
     }, false);
   }
